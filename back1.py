@@ -1,25 +1,25 @@
 import re
-from transformers import pipeline
 
-# OPTIONAL: Small model (fast download ~250MB)
-try:
-    classifier = pipeline(
-        "text-classification",
-        model="distilbert-base-uncased-finetuned-sst-2-english"
-    )
-    USE_ML = True
-except:
-    USE_ML = False
-
-# Suspicious keywords
+# -----------------------------
+# CONFIG
+# -----------------------------
 SUSPICIOUS_WORDS = [
     "urgent", "immediately", "click", "verify", "blocked",
     "suspend", "reward", "cashback", "lottery", "win",
-    "account", "bank", "offer", "free", "limited"
+    "account", "bank", "offer", "free", "limited", "kyc"
 ]
 
-# Suspicious domains
 SUSPICIOUS_TLDS = [".xyz", ".top", ".loan", ".click"]
+
+TRUSTED_BANKS = ["sbi", "hdfc", "icici", "axis", "rbi", "paytm"]
+
+# -----------------------------
+# LANGUAGE DETECTION (Simple)
+# -----------------------------
+def detect_language(text):
+    if any(word in text.lower() for word in ["hai", "kar", "karo", "aapka"]):
+        return "Hinglish/Hindi"
+    return "English"
 
 # -----------------------------
 # ENTITY EXTRACTION
@@ -27,13 +27,46 @@ SUSPICIOUS_TLDS = [".xyz", ".top", ".loan", ".click"]
 def extract_entities(text):
     urls = re.findall(r'https?://\S+', text)
     upi_ids = re.findall(r'[\w.-]+@[\w]+', text)
-    amounts = re.findall(r'₹\s?\d+|\d+\s?rs', text.lower())
+    amounts = re.findall(r'₹\s?\d+|\d+\s?rs|\d{3,}', text.lower())
 
     return {
         "urls": urls,
         "upi_ids": upi_ids,
         "amounts": amounts
     }
+
+# -----------------------------
+# URL ANALYSIS
+# -----------------------------
+def analyze_urls(urls):
+    score = 0
+    reasons = []
+
+    for url in urls:
+        if any(tld in url for tld in SUSPICIOUS_TLDS):
+            score += 2
+            reasons.append(f"Suspicious domain: {url}")
+
+        if "-" in url or len(url) > 30:
+            score += 1
+            reasons.append(f"Unusual URL pattern: {url}")
+
+    return score, reasons
+
+# -----------------------------
+# IMPERSONATION DETECTION
+# -----------------------------
+def detect_impersonation(text):
+    text_lower = text.lower()
+    score = 0
+    reasons = []
+
+    for bank in TRUSTED_BANKS:
+        if bank in text_lower:
+            score += 1
+            reasons.append(f"Mentions bank: {bank.upper()}")
+
+    return score, reasons
 
 # -----------------------------
 # PATTERN DETECTION
@@ -46,33 +79,34 @@ def detect_patterns(text):
     for word in SUSPICIOUS_WORDS:
         if word in text_lower:
             score += 1
-            reasons.append(f"Contains suspicious word: {word}")
-
-    for tld in SUSPICIOUS_TLDS:
-        if tld in text_lower:
-            score += 2
-            reasons.append("Suspicious domain detected")
+            reasons.append(f"Suspicious word: {word}")
 
     if "urgent" in text_lower or "immediately" in text_lower:
         score += 2
         reasons.append("Creates urgency")
 
+    if "click" in text_lower:
+        score += 1
+        reasons.append("Requests clicking link")
+
     return score, reasons
 
 # -----------------------------
-# MESSAGE TYPE DETECTION
+# SCAM TYPE DETECTION
 # -----------------------------
 def detect_type(text):
     text_lower = text.lower()
 
     if "upi" in text_lower or "@upi" in text_lower:
         return "UPI Scam"
-    elif "bank" in text_lower or "account" in text_lower:
-        return "Bank Scam"
+    elif "kyc" in text_lower or "account" in text_lower:
+        return "Bank/KYC Scam"
     elif "job" in text_lower or "earn" in text_lower:
         return "Job Scam"
     elif "offer" in text_lower or "win" in text_lower:
-        return "Promotional Scam"
+        return "Lottery/Offer Scam"
+    elif "otp" in text_lower:
+        return "OTP Scam"
     else:
         return "Unknown"
 
@@ -81,52 +115,57 @@ def detect_type(text):
 # -----------------------------
 def analyze_message(text):
     entities = extract_entities(text)
+
     pattern_score, pattern_reasons = detect_patterns(text)
+    url_score, url_reasons = analyze_urls(entities["urls"])
+    imp_score, imp_reasons = detect_impersonation(text)
 
-    # ML (optional)
-    if USE_ML:
-        prediction = classifier(text)[0]
-        confidence = prediction['score']
-    else:
-        # fallback smart confidence
-        confidence = min(1.0, 0.4 + pattern_score * 0.15)
+    total_score = pattern_score + url_score + imp_score
 
-    # Risk score
-    risk_score = confidence + (pattern_score * 0.2)
+    # Smart confidence (no heavy ML)
+    confidence = min(1.0, 0.3 + total_score * 0.1)
 
     # Risk level
-    if risk_score > 0.8:
+    if total_score >= 6:
         risk_level = "HIGH"
-    elif risk_score > 0.5:
+    elif total_score >= 3:
         risk_level = "MEDIUM"
     else:
         risk_level = "LOW"
 
-    # Explanation
-    if pattern_reasons:
-        explanation = "This message looks risky because: " + ", ".join(pattern_reasons)
+    # Combine reasons
+    all_reasons = pattern_reasons + url_reasons + imp_reasons
+
+    # Human-like explanation
+    if all_reasons:
+        explanation = "This message may be a scam because it: " + ", ".join(all_reasons)
     else:
         explanation = "No strong scam indicators detected."
 
     # Advice
     if risk_level == "HIGH":
-        advice = "Do NOT click links or send money."
+        advice = "Avoid clicking links or sending money. This is likely a scam."
     elif risk_level == "MEDIUM":
-        advice = "Be cautious. Verify before acting."
+        advice = "Be cautious. Verify the sender before taking action."
     else:
-        advice = "Looks safe, but stay alert."
+        advice = "Seems safe, but always stay alert."
 
     return {
         "risk_level": risk_level,
         "confidence": round(confidence, 2),
+        "language": detect_language(text),
         "message_type": detect_type(text),
+        "risk_score": total_score,
         "entities": entities,
         "explanation": explanation,
-        "advice": advice
+        "advice": advice,
+        "risk_factors": all_reasons
     }
 
 
-# Test
+# -----------------------------
+# TEST
+# -----------------------------
 if __name__ == "__main__":
-    msg = "Dear user, your SBI account will be blocked. Click http://fake.xyz and pay ₹5000 immediately."
+    msg = "Aapka SBI account block hone wala hai. Click http://secure-pay.xyz aur ₹5000 bheje turant"
     print(analyze_message(msg))
