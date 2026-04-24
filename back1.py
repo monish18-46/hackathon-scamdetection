@@ -1,4 +1,6 @@
 import re
+import os
+import json
 import pandas as pd
 import uuid
 from datetime import datetime
@@ -7,6 +9,9 @@ from deep_translator import GoogleTranslator
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import Pipeline
+
+# ---------------- LOG FILE ----------------
+LOG_FILE = "scam_logs.csv"
 
 # ---------------- AI MODEL ----------------
 data = {
@@ -44,7 +49,7 @@ def ai_predict(msg):
     probability = model.predict_proba([msg]).max()
     return prediction.upper(), round(probability, 2)
 
-# ---------------- LANGUAGE ----------------
+# ---------------- LANGUAGE DETECTION ----------------
 def detect_language(msg):
     try:
         code = detect(msg)
@@ -76,7 +81,10 @@ KEYWORDS = {
 # ---------------- HIGHLIGHT ----------------
 def highlight_words(msg):
     words = msg.split()
-    return " ".join([f"[{w.upper()}]" if w.lower().strip(".,!?") in KEYWORDS else w for w in words])
+    return " ".join([
+        f"[{w.upper()}]" if w.lower().strip(".,!?") in KEYWORDS else w
+        for w in words
+    ])
 
 # ---------------- ENTITY EXTRACTION ----------------
 def extract_entities(msg):
@@ -86,7 +94,7 @@ def extract_entities(msg):
         "amounts": re.findall(r'₹\d+|\d+\s?rs', msg.lower())
     }
 
-# ---------------- RISK ----------------
+# ---------------- RISK ENGINE ----------------
 def calculate_risk(msg):
     msg_lower = msg.lower()
     risk = 0
@@ -103,7 +111,26 @@ def calculate_risk(msg):
 
     return risk, reasons
 
-# ---------------- MAIN ----------------
+# ---------------- LOGGING FEATURE ----------------
+def log_result(result):
+    row = {
+        "timestamp": result["meta"]["timestamp"],
+        "text": result["input"]["original_text"],
+        "language": result["input"]["language"],
+        "risk_level": result["analysis"]["risk"]["level"],
+        "risk_score": result["analysis"]["risk"]["score"],
+        "ai_label": result["analysis"]["ai_prediction"]["label"],
+        "confidence": result["analysis"]["ai_prediction"]["confidence"]
+    }
+
+    df_row = pd.DataFrame([row])
+
+    if not os.path.exists(LOG_FILE):
+        df_row.to_csv(LOG_FILE, index=False)
+    else:
+        df_row.to_csv(LOG_FILE, mode='a', header=False, index=False)
+
+# ---------------- MAIN FUNCTION ----------------
 def analyze_text(msg):
     request_id = str(uuid.uuid4())
     timestamp = datetime.now().isoformat()
@@ -131,11 +158,9 @@ def analyze_text(msg):
     else:
         advice = "Looks safe, but stay alert."
 
-    # Explanation
     explanation = ", ".join(reasons) if reasons else "No strong indicators"
 
-    # ---------------- STRUCTURED OUTPUT ----------------
-    return {
+    result = {
         "status": "success",
         "meta": {
             "request_id": request_id,
@@ -150,7 +175,7 @@ def analyze_text(msg):
             "risk": {
                 "level": level,
                 "score": risk,
-                "confidence": round(min(risk/100, 1.0), 2)
+                "confidence": round(min(risk / 100, 1.0), 2)
             },
             "ai_prediction": {
                 "label": ai_label,
@@ -166,10 +191,13 @@ def analyze_text(msg):
         }
     }
 
+    # 🔥 LOG EVERY REQUEST
+    log_result(result)
+
+    return result
+
 # ---------------- TEST ----------------
 if __name__ == "__main__":
     msg = input("Enter message: ")
     result = analyze_text(msg)
-
-    import json
     print(json.dumps(result, indent=4))
